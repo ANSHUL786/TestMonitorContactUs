@@ -2,7 +2,7 @@ name: Contact form monitor
 
 on:
   schedule:
-    - cron: '0 */2 * * *'   # every 2 hours (UTC)
+    - cron: '16 */2 * * *'   # every 2 hours (UTC)
   workflow_dispatch:         # "Run workflow" button for manual runs
 
 jobs:
