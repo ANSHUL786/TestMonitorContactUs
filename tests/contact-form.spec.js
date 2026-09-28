@@ -19,7 +19,31 @@ const TEST_EMAIL = process.env.TEST_EMAIL || 'qa+monitor@uxarmy.com';
 const MARKER = '[AUTOMATED MONITOR - please ignore]';
 
 const SUBMIT_URL = /admin-ajax\.php|\/wp-json\/|hsforms|hubspot|\/submit|\/contact/i;
-const SUCCESS_TEXT = /thank you|success|we.ll be in touch|received|connect with you/i;
+// NOTE: the page permanently shows "Our product experts will connect with you within one business day",
+// so success is detected as a matching message that was NOT on the page before submitting.
+const SUCCESS_TEXT = /thank you|thanks|success|submitted|we.ll be in touch|received|message (has been )?sent/i;
+
+/** Texts of visible elements matching SUCCESS_TEXT right now. */
+async function successTexts(page) {
+  return page.evaluate((src) => {
+    const re = new RegExp(src, 'i');
+    return [...document.querySelectorAll('body *')]
+      .filter((el) => el.children.length === 0 && /** @type {HTMLElement} */ (el).offsetParent !== null)
+      .map((el) => (el.textContent || '').trim())
+      .filter((t) => t && t.length < 300 && re.test(t));
+  }, SUCCESS_TEXT.source);
+}
+
+/** Waits up to `timeout` ms for a success message that wasn't in `baseline`. Returns it or null. */
+async function waitForNewSuccess(page, baseline, timeout = 2000) {
+  const end = Date.now() + timeout;
+  do {
+    const fresh = (await successTexts(page)).filter((t) => !baseline.includes(t));
+    if (fresh.length) return fresh[0];
+    await page.waitForTimeout(250);
+  } while (Date.now() < end);
+  return null;
+}
 const ERROR_SELECTOR =
   '[class*="error" i]:not(:empty), [class*="invalid" i]:not(:empty), [role="alert"]:not(:empty), [aria-live]:not(:empty)';
 
@@ -101,10 +125,14 @@ async function isFlagged(field) {
  */
 async function attemptSubmit(f, hits) {
   if (await f.submit.isDisabled()) return { blockedBy: 'disabled-button' };
+  const baseline = await successTexts(f.page);
   await f.submit.click();
-  await f.page.waitForTimeout(2000);
-  const succeeded = hits.length > 0 || (await f.page.getByText(SUCCESS_TEXT).first().isVisible().catch(() => false));
-  return { blockedBy: succeeded ? null : 'validation' };
+  const successMsg = await waitForNewSuccess(f.page, baseline, 2500);
+  if (hits.length || successMsg) {
+    console.log('NOT blocked →', { apiCalls: hits, successMsg });
+    return { blockedBy: null };
+  }
+  return { blockedBy: 'validation' };
 }
 
 async function fillValid(f, overrides = {}) {
@@ -203,6 +231,7 @@ test.describe('Contact form – submission & API', () => {
     const f = await openForm(page);
     await fillValid(f);
     await expect(f.submit, 'submit should be enabled for valid data').toBeEnabled();
+    const baseline = await successTexts(page);
 
     const [response] = await Promise.all([
       page.waitForResponse((res) => isFormSubmission(res.request()), { timeout: 20_000 }),
@@ -237,7 +266,9 @@ test.describe('Contact form – submission & API', () => {
       expect(ok, `API body did not indicate success: ${JSON.stringify(body)}`).toBe(true);
     }
 
-    // 4. User sees a confirmation message
-    await expect(page.getByText(SUCCESS_TEXT).first()).toBeVisible({ timeout: 10_000 });
+    // 4. User sees a NEW confirmation message (not the static text already on the page)
+    const successMsg = await waitForNewSuccess(page, baseline, 10_000);
+    console.log('Confirmation shown:', successMsg);
+    expect(successMsg, 'a confirmation message should appear after submit').not.toBeNull();
   });
 });
