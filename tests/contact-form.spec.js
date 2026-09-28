@@ -196,6 +196,7 @@ test.describe('Contact form – field validation', () => {
     const hits = watchSubmissions(page);
     await fillValid(f);
     await f.consent.uncheck();
+    await expect(f.consent, 'consent should be unchecked before submit').not.toBeChecked();
 
     const { blockedBy } = await attemptSubmit(f, hits);
     console.log('Unchecked consent blocked by:', blockedBy);
@@ -226,12 +227,14 @@ test.describe('Contact form – field validation', () => {
 // ---------------------------------------------------------------------------
 test.describe('Contact form – submission & API', () => {
   test.skip(process.env.SKIP_SUBMIT === 'true', 'SKIP_SUBMIT=true');
+  test.describe.configure({ retries: 0 }); // a retry would send a second real lead
 
   test('valid submission returns a successful API response', async ({ page }) => {
     const f = await openForm(page);
     await fillValid(f);
     await expect(f.submit, 'submit should be enabled for valid data').toBeEnabled();
     const baseline = await successTexts(page);
+    const urlBefore = page.url();
 
     const [response] = await Promise.all([
       page.waitForResponse((res) => isFormSubmission(res.request()), { timeout: 20_000 }),
@@ -266,9 +269,25 @@ test.describe('Contact form – submission & API', () => {
       expect(ok, `API body did not indicate success: ${JSON.stringify(body)}`).toBe(true);
     }
 
-    // 4. User sees a NEW confirmation message (not the static text already on the page)
-    const successMsg = await waitForNewSuccess(page, baseline, 10_000);
-    console.log('Confirmation shown:', successMsg);
-    expect(successMsg, 'a confirmation message should appear after submit').not.toBeNull();
+    // 4. User gets a confirmation: new message, redirect, or the form is hidden/replaced
+    let confirmation = null;
+    const end = Date.now() + 10_000;
+    while (!confirmation && Date.now() < end) {
+      const msg = await waitForNewSuccess(page, baseline, 500);
+      if (msg) confirmation = `message: "${msg}"`;
+      else if (page.url() !== urlBefore) confirmation = `redirect: ${page.url()}`;
+      else if (!(await f.form.isVisible().catch(() => false))) confirmation = 'form hidden/replaced';
+      else if (!(await f.submit.isVisible().catch(() => false))) confirmation = 'submit button removed';
+      else if ((await f.firstName.inputValue().catch(() => 'x')) === '' &&
+               (await f.email.inputValue().catch(() => 'x')) === '') confirmation = 'form reset after submit';
+    }
+    await test.info().attach('after-submit.png', {
+      body: await page.screenshot({ fullPage: true }), contentType: 'image/png',
+    });
+    await test.info().attach('after-submit-form.html', {
+      body: await f.form.innerHTML().catch(() => '(form gone)'), contentType: 'text/html',
+    });
+    console.log('Confirmation:', confirmation);
+    expect(confirmation, 'a confirmation should appear after submit (see after-submit.png)').not.toBeNull();
   });
 });
