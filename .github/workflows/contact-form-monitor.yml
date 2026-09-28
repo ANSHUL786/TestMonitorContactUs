@@ -1,0 +1,43 @@
+name: Contact form monitor
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'   # every 2 hours (UTC)
+  workflow_dispatch:         # "Run workflow" button for manual runs
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run tests
+        env:
+          CI: 'true'
+          TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
+          SKIP_SUBMIT: ${{ vars.SKIP_SUBMIT }}
+        run: npx playwright test
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Slack alert on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
+          curl -s -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"UXArmy contact form check FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "$SLACK_WEBHOOK_URL"
